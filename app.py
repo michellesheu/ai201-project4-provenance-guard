@@ -8,6 +8,8 @@ import uuid
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 import audit
 import scoring
@@ -18,8 +20,19 @@ load_dotenv()
 app = Flask(__name__)
 audit.init_db()
 
+# Rate limiting. Limits reflect realistic single-creator use (a writer
+# submitting their own work) while blocking a script flooding the endpoint.
+# See README for the reasoning behind these specific numbers.
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
 
 @app.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
@@ -32,8 +45,7 @@ def submit():
     stylo_score = stylometry_signal(text)
 
     ai_score, attribution, confidence = scoring.combine(llm_score, stylo_score)
-    # Label text is wired in M5; placeholder keeps the response shape stable.
-    label = f"{attribution} (confidence {confidence})"
+    label = scoring.label_for(attribution, confidence)
 
     audit.write_decision(
         {
@@ -60,6 +72,29 @@ def submit():
                 "stylo_score": round(stylo_score, 3),
                 "ai_score": ai_score,
             },
+        }
+    )
+
+
+@app.route("/appeal", methods=["POST"])
+def appeal():
+    data = request.get_json(silent=True) or {}
+    content_id = data.get("content_id")
+    reasoning = (data.get("creator_reasoning") or "").strip()
+    if not content_id or not reasoning:
+        return jsonify(
+            {"error": "fields 'content_id' and 'creator_reasoning' are required"}
+        ), 400
+
+    updated = audit.file_appeal(content_id, reasoning)
+    if updated is None:
+        return jsonify({"error": f"no submission found for content_id {content_id}"}), 404
+
+    return jsonify(
+        {
+            "content_id": content_id,
+            "status": updated["status"],
+            "message": "Appeal received. This submission is now under review.",
         }
     )
 
