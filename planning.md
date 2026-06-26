@@ -113,3 +113,85 @@ This trace is why the AI threshold is set higher than the human threshold, and w
 | `POST /submit` | JSON `{text, creator_id}` | `{content_id, attribution, confidence, label, signals}` |
 | `POST /appeal` | JSON `{content_id, creator_reasoning}` | `{content_id, status, message}` |
 | `GET /log` | — | `{entries: [...]}` most recent audit entries |
+
+---
+
+## Design spec — the five questions
+
+### 1. Detection signals
+
+Two signals, both output a float **0–1 = P(AI-generated)**:
+
+- `llm_signal(text)` — Groq semantic assessment (see above).
+- `stylometry_signal(text)` — structural heuristics (see above).
+
+**Combination:** weighted average, LLM weighted higher because it is the more reliable signal:
+
+```
+ai_score = 0.60 * llm_score + 0.40 * stylo_score
+```
+
+### 2. Uncertainty representation
+
+`ai_score` is the combined probability the text is AI. From it we derive a reported **confidence** = certainty of the verdict, where 0 = total uncertainty (a coin-flip at the midpoint) and 1 = total certainty:
+
+```
+confidence = 2 * |ai_score - 0.5|        # clamped to [0, 1]
+```
+
+So `ai_score = 0.55 → confidence 0.10` (we are barely sure) and `ai_score = 0.95 → confidence 0.90` (we are very sure). A 0.51-ish score lands in the uncertain band; a 0.95 score lands in high-confidence AI — meaningfully different labels.
+
+**Asymmetric thresholds (the false-positive guard):**
+
+| `ai_score` range | attribution | label variant |
+|------------------|-------------|---------------|
+| `>= 0.72` | `likely_ai` | high-confidence AI |
+| `<= 0.32` | `likely_human` | high-confidence human |
+| else (`0.32 .. 0.72`) | `uncertain` | uncertain |
+
+The AI region (width 0.28) is deliberately narrower than the human region (width 0.32), and the uncertain middle is generous. It takes *stronger* evidence to accuse a creator of using AI than to clear them — encoding "false positive is worse than false negative."
+
+### 3. Transparency label design — the three variants (verbatim)
+
+`{pct}` = `round(confidence * 100)`.
+
+- **high-confidence AI:**
+  `🤖 Likely AI-generated. Our analysis strongly suggests this text was produced by an AI system (confidence: {pct}%). This is an automated estimate, not a verdict — if you wrote this yourself, you can appeal.`
+- **high-confidence human:**
+  `✍️ Likely human-written. Our analysis strongly suggests a person wrote this text (confidence: {pct}%). This is an automated estimate, not a certainty.`
+- **uncertain:**
+  `❓ Uncertain origin. We couldn't confidently tell whether a person or an AI wrote this (confidence: {pct}%). We've chosen not to guess — treat the authorship as unverified.`
+
+### 4. Appeals workflow
+
+- **Who:** the creator of a submission, referencing its `content_id`.
+- **What they provide:** `creator_reasoning` (free text explaining why they believe the classification is wrong).
+- **What the system does on receipt:** look up the original audit entry, change `status` from `classified` → `under_review`, store `appeal_reasoning` and `appeal_timestamp` on that entry, and return a confirmation. No automated re-classification.
+- **What a reviewer sees:** the original decision (attribution, confidence, both signal scores) alongside the creator's reasoning, all in one audit entry via `GET /log`.
+
+### 5. Anticipated edge cases (specific, not generic)
+
+1. **Formal/edited human essay** — low burstiness + even punctuation make stylometry read it as AI; combined score drifts into the uncertain band. Handled by the wide uncertain band + appeal path, not a false AI verdict.
+2. **Short submissions (< ~40 words)** — stylometric statistics are unreliable on little text (variance and TTR are noisy). The system flags low reliability and leans on the LLM signal; very short inputs tend toward "uncertain."
+3. **Repetitive poetry / song lyrics** — heavy repetition crushes type-token ratio and sentence-length variance, mimicking AI uniformity. A known limitation documented in the README.
+
+---
+
+## AI Tool Plan
+
+For each implementation milestone: what spec context to provide, what to ask for, how to verify.
+
+### M3 — submission endpoint + first signal
+- **Provide:** Detection-signals section + architecture diagram + API contract.
+- **Ask for:** Flask app skeleton with `POST /submit` stub and `llm_signal(text)` returning a 0–1 score from Groq.
+- **Verify:** call `llm_signal` directly on a few inputs; confirm it returns a parseable float and the route matches the contract before wiring in.
+
+### M4 — second signal + confidence scoring
+- **Provide:** Detection-signals + uncertainty-representation sections + diagram.
+- **Ask for:** `stylometry_signal(text)` and `scoring.combine()` implementing the exact weights/thresholds above.
+- **Verify:** scores vary across the 4 test inputs; confirm generated thresholds match the table (AI tools sometimes silently diverge).
+
+### M5 — production layer
+- **Provide:** Label-variants + appeals-workflow sections + diagram.
+- **Ask for:** `label_for(attribution, confidence)` and `POST /appeal`.
+- **Verify:** all three label variants are reachable; an appeal flips status to `under_review` and logs the reasoning.
