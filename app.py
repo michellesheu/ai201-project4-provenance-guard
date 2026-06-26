@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
 import audit
-from signals import llm_signal
+import scoring
+from signals import llm_signal, stylometry_signal
 
 load_dotenv()
 
@@ -28,11 +29,11 @@ def submit():
 
     content_id = str(uuid.uuid4())
     llm_score = llm_signal(text)
+    stylo_score = stylometry_signal(text)
 
-    # Placeholder until M4 scoring lands.
-    attribution = "likely_ai" if llm_score >= 0.5 else "likely_human"
-    confidence = 0.5
-    label = "Classification pending — scoring not yet implemented."
+    ai_score, attribution, confidence = scoring.combine(llm_score, stylo_score)
+    # Label text is wired in M5; placeholder keeps the response shape stable.
+    label = f"{attribution} (confidence {confidence})"
 
     audit.write_decision(
         {
@@ -41,8 +42,8 @@ def submit():
             "timestamp": audit.now_iso(),
             "attribution": attribution,
             "confidence": confidence,
-            "llm_score": llm_score,
-            "stylo_score": None,
+            "llm_score": round(llm_score, 3),
+            "stylo_score": round(stylo_score, 3),
             "label": label,
             "status": "classified",
         }
@@ -54,7 +55,11 @@ def submit():
             "attribution": attribution,
             "confidence": confidence,
             "label": label,
-            "signals": {"llm_score": round(llm_score, 3)},
+            "signals": {
+                "llm_score": round(llm_score, 3),
+                "stylo_score": round(stylo_score, 3),
+                "ai_score": ai_score,
+            },
         }
     )
 

@@ -34,8 +34,8 @@ def _heuristic_fallback(text):
     ]
     low = text.lower()
     hits = sum(1 for m in markers if m in low)
-    # 0 hits -> 0.35, scales up with marker density
-    score = 0.35 + 0.13 * hits
+    # 0 hits -> 0.25 (leans human), scales up with marker density
+    score = 0.25 + 0.15 * hits
     return max(0.0, min(1.0, score))
 
 
@@ -66,10 +66,55 @@ def llm_signal(text):
         return _heuristic_fallback(text)
 
 
+def _sentences(text):
+    parts = re.split(r"[.!?]+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _clamp(x):
+    return max(0.0, min(1.0, x))
+
+
+def stylometry_signal(text):
+    """Structural signal. Combines three metrics that differ between human and
+    AI prose. AI text is more uniform; human writing is more 'bursty'.
+    Returns a float 0..1 = P(AI). Short texts are pulled toward 0.5 because
+    their statistics are unreliable.
+    """
+    words = re.findall(r"[a-zA-Z']+", text.lower())
+    n = len(words)
+    if n == 0:
+        return 0.5
+    sents = _sentences(text)
+
+    # 1. Sentence-length burstiness: humans vary a lot, AI is uniform.
+    lengths = [len(re.findall(r"[a-zA-Z']+", s)) for s in sents] or [n]
+    mean_len = sum(lengths) / len(lengths)
+    var = sum((l - mean_len) ** 2 for l in lengths) / len(lengths)
+    std = var ** 0.5
+    ai_burst = _clamp(1 - std / 10.0)        # low variance -> AI-like
+
+    # 2. Type-token ratio: high diversity reads human; flat mid-range reads AI.
+    ttr = len(set(words)) / n
+    ai_ttr = _clamp((0.72 - ttr) / 0.40)     # low/mid TTR -> AI-like
+
+    # 3. Punctuation variety: humans use irregular marks (— ; : ( ) … ! ?).
+    variety = len(set(re.findall(r"[—;:()\-!?…]", text)))
+    ai_punct = _clamp(1 - variety / 5.0)     # few distinct marks -> AI-like
+
+    score = (ai_burst + ai_ttr + ai_punct) / 3.0
+
+    # Reliability: blend toward 0.5 (uncertain) for short inputs.
+    if n < 40:
+        weight = n / 40.0
+        score = 0.5 + (score - 0.5) * weight
+    return _clamp(score)
+
+
 if __name__ == "__main__":
     samples = [
         "It is important to note that stakeholders must leverage synergies.",
         "ok so i finally tried that ramen place and honestly? underwhelming.",
     ]
     for s in samples:
-        print(round(llm_signal(s), 3), "::", s[:50])
+        print(round(llm_signal(s), 3), round(stylometry_signal(s), 3), "::", s[:50])
