@@ -22,7 +22,7 @@ Show `planning.md` Architecture diagram for two seconds while you say it.
 
 ## Scene 2 — A submission, end to end (~40s)
 
-Run the AI example and read the response out loud:
+Run the formal essay and read the response out loud:
 
 ```bash
 curl -s -X POST http://localhost:5000/submit \
@@ -30,9 +30,11 @@ curl -s -X POST http://localhost:5000/submit \
   -d '{"text": "Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that while the benefits of AI are numerous, it is equally essential to consider the ethical implications. Furthermore, stakeholders across various sectors must collaborate to ensure responsible deployment.", "creator_id": "demo-ai"}'
 ```
 
-> "Every submission runs through **two independent signals** — an LLM that reads it semantically, and pure-Python stylometry that measures structure like sentence-length variance. Here you can see both scores in the response, combined into one confidence, and a plain-language label. This one comes back **likely AI**."
+> "Every submission runs through **two independent signals** — an LLM that reads it semantically, and pure-Python stylometry that measures structure like sentence-length variance. Here you can see both scores in the response, combined into one confidence, and a plain-language label. And look at what it does with this one — a textbook formal essay, exactly the kind of writing you'd *expect* it to flag. The LLM leans AI, but the stylometry isn't sure, so the combined confidence lands in the middle and it returns **uncertain**. It refuses to guess. That's the design: on a writing platform, calling a real person's work AI is the worst thing you can do, so unless both signals line up, it says *unverified* instead of accusing."
 
-Point at `signals.llm_score`, `signals.stylo_score`, `confidence`, and `label` in the JSON.
+Point at `signals.llm_score` (high), `signals.stylo_score` (middling), `confidence`, and `label` — the two signals disagreeing is the whole story here.
+
+> **If Groq rolls high and it lands `likely AI` instead:** don't panic — say "here the signals agree, so it commits to likely AI — and in the next scene you'll see what happens when they *don't*." Either outcome demos the design.
 
 ---
 
@@ -48,7 +50,7 @@ curl -s -X POST http://localhost:5000/submit \
 
 > "Casual human writing comes back **likely human**, with a clearly different score."
 
-Then a borderline one:
+Then a marketing blurb — the case where both signals agree:
 
 ```bash
 curl -s -X POST http://localhost:5000/submit \
@@ -56,7 +58,7 @@ curl -s -X POST http://localhost:5000/submit \
   -d '{"text": "Our innovative platform leverages cutting-edge technology to deliver seamless solutions. Designed with the user in mind, it empowers teams to unlock their full potential.", "creator_id": "demo-mid"}'
 ```
 
-> "And when the signals disagree or the evidence is weak, it returns **uncertain** instead of guessing. That uncertain band is wide *on purpose* — labeling a human's work as AI is the worst outcome on a writing platform, so the AI threshold is deliberately stricter than the human one."
+> "This buzzword-dense marketing copy is the opposite of Scene 2 — here both signals *agree* it reads generated, so the system commits and returns **likely AI**. That's the contrast: when the LLM and the stylometry line up, it labels confidently; when they pull apart, like the essay, it holds back and says uncertain. And notice the asymmetry — the AI threshold is deliberately stricter than the human one, because labeling a real person's work as AI is the worst outcome on a writing platform, so the uncertain band leans protective."
 
 ---
 
@@ -102,11 +104,55 @@ done
 
 ---
 
+## PowerShell equivalents (Windows)
+
+The `curl` blocks above are bash. On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest` and won't accept that syntax, so use `curl.exe` (the real curl), keep each command on **one line**, and escape the inner quotes as `\"`. The single quotes around the JSON are literal in PowerShell, so the `\"` reach curl untouched.
+
+**Scene 2 — AI example:**
+
+```powershell
+curl.exe -s -X POST http://localhost:5000/submit -H "Content-Type: application/json" -d '{\"text\": \"Artificial intelligence represents a transformative paradigm shift in modern society. It is important to note that while the benefits of AI are numerous, it is equally essential to consider the ethical implications. Furthermore, stakeholders across various sectors must collaborate to ensure responsible deployment.\", \"creator_id\": \"demo-ai\"}'
+```
+
+**Scene 3 — human example:**
+
+```powershell
+curl.exe -s -X POST http://localhost:5000/submit -H "Content-Type: application/json" -d '{\"text\": \"ok so i finally tried that new ramen place downtown and honestly? underwhelming. the broth was fine but they put WAY too much sodium in it and i was thirsty for like three hours after. probably wont go back unless someone drags me there\", \"creator_id\": \"demo-human\"}'
+```
+
+**Scene 3 — borderline example:**
+
+```powershell
+curl.exe -s -X POST http://localhost:5000/submit -H "Content-Type: application/json" -d '{\"text\": \"Our innovative platform leverages cutting-edge technology to deliver seamless solutions. Designed with the user in mind, it empowers teams to unlock their full potential.\", \"creator_id\": \"demo-mid\"}'
+```
+
+**Scene 4 — appeal** (paste the `content_id` from the AI submission):
+
+```powershell
+curl.exe -s -X POST http://localhost:5000/appeal -H "Content-Type: application/json" -d '{\"content_id\": \"PASTE-AI-CONTENT-ID\", \"creator_reasoning\": \"I wrote this essay myself for a class.\"}'
+```
+
+**Scene 5 — audit log:**
+
+```powershell
+curl.exe -s http://localhost:5000/log
+```
+
+**Scene 5 — rate-limit flood** (first ten return 200, then 429s):
+
+```powershell
+for ($i = 1; $i -le 12; $i++) {
+  curl.exe -s -o NUL -w "%{http_code}`n" -X POST http://localhost:5000/submit -H "Content-Type: application/json" -d '{\"text\": \"rate limit test submission for the demo.\", \"creator_id\": \"flooder\"}'
+}
+```
+
+---
+
 ## One-line cheat sheet (labels you should expect this session)
 
 | Input | Expected label |
 |-------|----------------|
-| Formal AI essay (Scene 2) | likely AI *(can dip to uncertain — Groq variance)* |
+| Formal AI essay (Scene 2) | uncertain *(can rise to likely AI — Groq variance; script handles both)* |
 | Casual ramen review (Scene 3) | likely human |
-| Product blurb (Scene 3) | uncertain |
+| Product blurb (Scene 3) | likely AI *(signals agree — contrast to Scene 2 uncertain)* |
 | Rate-limit flood (Scene 5) | 200 ×10 then 429 |
