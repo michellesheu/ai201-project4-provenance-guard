@@ -220,3 +220,4 @@ __marimo__/
 # Provenance Guard
 audit_log.db
 audit_log.json
+demo-script.md
